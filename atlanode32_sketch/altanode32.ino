@@ -10,6 +10,7 @@
 #include <ArduinoJson.h>
 #include <EEPROM.h>
 #include <mbedtls/aes.h>
+#include <Arduino.h>
 
 // Constants and global variables
 #define KEY_SIZE 16
@@ -42,6 +43,29 @@ String urlEncode(const String& input) {
     }
   }
   return output;
+}
+
+String urlDecode(String input) {
+  String decoded = "";
+  char temp[] = "0x00";
+  unsigned int len = input.length();
+  unsigned int i = 0;
+  while (i < len) {
+    if (input[i] == '%') {
+      if (i + 2 < len) {
+        temp[2] = input[i + 1];
+        temp[3] = input[i + 2];
+        decoded += (char)strtol(temp, NULL, 16);
+        i += 2;
+      }
+    } else if (input[i] == '+') {
+      decoded += ' ';
+    } else {
+      decoded += input[i];
+    }
+    i++;
+  }
+  return decoded;
 }
 
 // Function declarations
@@ -339,6 +363,8 @@ void handleSaveWifi(AsyncWebServerRequest *request) {
 
 void handleSaveSetup(AsyncWebServerRequest *request) {
   String new_apiUrl = request->getParam("webapiurl")->value();
+  new_apiUrl = urlDecode(new_apiUrl);  // Decode the URL
+  
   int new_entryValues[4];
   for (int i = 0; i < 4; i++) {
     new_entryValues[i] = request->getParam("webentry" + String(i+1))->value().toInt();
@@ -375,8 +401,8 @@ void handleSetup(AsyncWebServerRequest *request) {
   String htmlContent = htmlFile.readString();
   htmlFile.close();
   
-  // Replace placeholders with actual data, encoding the API URL
-  htmlContent.replace("%%API_URL%%", urlEncode(apiUrl));
+  // Replace placeholders with actual data, using the decoded API URL
+  htmlContent.replace("%%API_URL%%", apiUrl);  // No need to encode here
   for (int i = 0; i < 4; i++) {
     htmlContent.replace("%%ENTRY" + String(i+1) + "%%", String(entryValues[i]));
   }
