@@ -33,8 +33,9 @@ This project implements an ESP32 (LUANODE32) microcontroller that provides contr
 
 ### Resources
 - [Avigilon Alta API docs](https://openpath.readme.io/)
-- [Orginal AltaNode Project Blog Post](https://jwise.dev/aviligon-alta-api/)
-- [Orginal AltaNode Project](https://github.com/Joshua-Wise/AltaNode)
+- [AltaNode Project Blog Post](https://jwise.dev/aviligon-alta-api/)
+- [AltaNode Project](https://github.com/Joshua-Wise/AltaNode)
+- [AltaNode32POE Project](https://github.com/Joshua-Wise/AltaNode32POE)
 
 ### Amazon Hardware List
 - [Enclosure](https://www.amazon.com/uxcell-Button-Control-Station-Aperture/dp/B07WKJM1NJ)
