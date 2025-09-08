@@ -2,14 +2,13 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
-#include <AsyncTCP.h>
-#include <ESPAsyncWebServer.h>
-#include <AsyncElegantOTA.h>
+#include <WebServer.h>
 #include <SPI.h>
 #include <SD.h>
 #include <ArduinoJson.h>
 #include <EEPROM.h>
 #include <mbedtls/aes.h>
+#include <esp_system.h>
 #include <Arduino.h>
 
 // Constants and global variables
@@ -26,7 +25,7 @@ const char *wififile = "/config/wifi.json";
 String ssid, password, apiUrl;
 int entryValues[4];
 
-AsyncWebServer server(80);
+WebServer server(80);
 mbedtls_aes_context aes;
 
 String urlEncode(const String& input) {
@@ -80,11 +79,14 @@ void saveWifiToFile(const String& new_ssid, const String& new_pass);
 void loadSetup();
 void saveSetupToFile(const String& new_apiUrl, const int new_entryValues[4]);
 void setupWebServer();
-void webRestart(AsyncWebServerRequest *request);
-void handleSaveWifi(AsyncWebServerRequest *request);
-void handleSaveSetup(AsyncWebServerRequest *request);
-void handleSetup(AsyncWebServerRequest *request);
-void handleWifi(AsyncWebServerRequest *request);
+void handleRoot();
+void handleWifi();
+void handleSetup();
+void handleSaveWifi();
+void handleSaveSetup();
+void handleWebRestart();
+bool sendAPIRequest(int buttonIndex);
+void checkWiFiConnection();
 
 // Encryption functions
 void getEncryptionKey(uint8_t* key) {
@@ -313,110 +315,39 @@ void saveSetupToFile(const String& new_apiUrl, const int new_entryValues[4]) {
 
 // Web server functions
 void setupWebServer() {
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    File htmlFile = SD.open("/html/index.html", FILE_READ);
-    if (!htmlFile) {
-      request->send(500, "text/plain", "Error: Could not open file");
-      return;
-    }
-    String htmlContent = htmlFile.readString();
-    htmlFile.close();
-    request->send(200, "text/html", htmlContent);
+  server.on("/", handleRoot);
+  server.on("/wifi", handleWifi);
+  server.on("/setup", handleSetup);
+  server.on("/saveWifi", handleSaveWifi);
+  server.on("/saveSetup", handleSaveSetup);
+  server.on("/webRestart", handleWebRestart);
+  server.on("/logout", []() {
+    server.send(401, "text/plain", "Unauthorized");
   });
 
-  server.on("/wifi", HTTP_GET, handleWifi);
-  server.on("/setup", HTTP_GET, handleSetup);
-  server.on("/saveSetup", HTTP_GET, handleSaveSetup);
-  server.on("/saveWifi", HTTP_GET, handleSaveWifi);
-  server.on("/webRestart", HTTP_GET, webRestart);
-  server.on("/logout", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(401);
-  });
-
-  AsyncElegantOTA.begin(&server);
   server.begin();
-  Serial.println("Web server started");
+  Serial.println("Web server started on port 80");
 }
 
-void webRestart(AsyncWebServerRequest *request) {
-  Serial.println("Restarting...");
-  request->send(200, "text/plain", "Restarting...");
-  delay(1000);
-  ESP.restart();
-}
-
-void handleSaveWifi(AsyncWebServerRequest *request) {
-  String new_ssid = request->getParam("webssid")->value();
-  String new_pass = request->getParam("webpass")->value();
-
-  saveWifiToFile(new_ssid, new_pass);
-
-  File htmlFile = SD.open("/html/save.html", FILE_READ);
+void handleRoot() {
+  File htmlFile = SD.open("/html/index.html", FILE_READ);
   if (!htmlFile) {
-    request->send(500, "text/plain", "Error: Could not open file");
+    server.send(500, "text/plain", "Error: Could not open index.html");
     return;
   }
   String htmlContent = htmlFile.readString();
   htmlFile.close();
-  request->send(200, "text/html", htmlContent);
+  server.send(200, "text/html", htmlContent);
 }
 
-void handleSaveSetup(AsyncWebServerRequest *request) {
-  String new_apiUrl = request->getParam("webapiurl")->value();
-  new_apiUrl = urlDecode(new_apiUrl);  // Decode the URL
-  
-  int new_entryValues[4];
-  for (int i = 0; i < 4; i++) {
-    new_entryValues[i] = request->getParam("webentry" + String(i+1))->value().toInt();
+void handleWifi() {
+  if (!server.authenticate(http_username, http_password)) {
+    return server.requestAuthentication();
   }
-
-  saveSetupToFile(new_apiUrl, new_entryValues);
-
-  Serial.println("Saving new setup configuration:");
-  Serial.println("API URL: " + new_apiUrl);
-  for (int i = 0; i < 4; i++) {
-    Serial.println("Entry " + String(i+1) + ": " + String(new_entryValues[i]));
-  }
-
-  File htmlFile = SD.open("/html/save.html", FILE_READ);
-  if (!htmlFile) {
-    request->send(500, "text/plain", "Error: Could not open file");
-    return;
-  }
-  String htmlContent = htmlFile.readString();
-  htmlFile.close();
-  request->send(200, "text/html", htmlContent);
-}
-
-void handleSetup(AsyncWebServerRequest *request) {
-  if(!request->authenticate(http_username, http_password))
-    return request->requestAuthentication();
-  
-  File htmlFile = SD.open("/html/setup.html", FILE_READ);
-  if (!htmlFile) {
-    request->send(500, "text/plain", "Error: Could not open file");
-    return;
-  }
-  
-  String htmlContent = htmlFile.readString();
-  htmlFile.close();
-  
-  // Replace placeholders with actual data, using the decoded API URL
-  htmlContent.replace("%%API_URL%%", apiUrl);  // No need to encode here
-  for (int i = 0; i < 4; i++) {
-    htmlContent.replace("%%ENTRY" + String(i+1) + "%%", String(entryValues[i]));
-  }
-  
-  request->send(200, "text/html", htmlContent);
-}
-
-void handleWifi(AsyncWebServerRequest *request) {
-  if(!request->authenticate(http_username, http_password))
-    return request->requestAuthentication();
   
   File htmlFile = SD.open("/html/wifi.html", FILE_READ);
   if (!htmlFile) {
-    request->send(500, "text/plain", "Error: Could not open file");
+    server.send(500, "text/plain", "Error: Could not open wifi.html");
     return;
   }
   
@@ -427,11 +358,183 @@ void handleWifi(AsyncWebServerRequest *request) {
   htmlContent.replace("%%SSID%%", ssid);
   htmlContent.replace("%%PASSWORD%%", password);
   
-  request->send(200, "text/html", htmlContent);
+  server.send(200, "text/html", htmlContent);
+}
+
+void handleSetup() {
+  if (!server.authenticate(http_username, http_password)) {
+    return server.requestAuthentication();
+  }
+  
+  File htmlFile = SD.open("/html/setup.html", FILE_READ);
+  if (!htmlFile) {
+    server.send(500, "text/plain", "Error: Could not open setup.html");
+    return;
+  }
+  
+  String htmlContent = htmlFile.readString();
+  htmlFile.close();
+  
+  // Replace placeholders with actual data
+  htmlContent.replace("%%API_URL%%", apiUrl);
+  for (int i = 0; i < 4; i++) {
+    htmlContent.replace("%%ENTRY" + String(i+1) + "%%", String(entryValues[i]));
+  }
+  
+  server.send(200, "text/html", htmlContent);
+}
+
+void handleSaveWifi() {
+  if (!server.hasArg("webssid") || !server.hasArg("webpass")) {
+    server.send(400, "text/plain", "Missing parameters");
+    return;
+  }
+  
+  String new_ssid = server.arg("webssid");
+  String new_pass = server.arg("webpass");
+  
+  saveWifiToFile(new_ssid, new_pass);
+  
+  File htmlFile = SD.open("/html/save.html", FILE_READ);
+  if (!htmlFile) {
+    server.send(500, "text/plain", "Error: Could not open save.html");
+    return;
+  }
+  String htmlContent = htmlFile.readString();
+  htmlFile.close();
+  server.send(200, "text/html", htmlContent);
+}
+
+void handleSaveSetup() {
+  if (!server.hasArg("webapiurl")) {
+    server.send(400, "text/plain", "Missing API URL parameter");
+    return;
+  }
+  
+  String new_apiUrl = urlDecode(server.arg("webapiurl"));
+  
+  int new_entryValues[4];
+  for (int i = 0; i < 4; i++) {
+    String paramName = "webentry" + String(i+1);
+    if (server.hasArg(paramName)) {
+      new_entryValues[i] = server.arg(paramName).toInt();
+    } else {
+      new_entryValues[i] = 0;
+    }
+  }
+  
+  saveSetupToFile(new_apiUrl, new_entryValues);
+  
+  Serial.println("Saving new setup configuration:");
+  Serial.println("API URL: " + new_apiUrl);
+  for (int i = 0; i < 4; i++) {
+    Serial.println("Entry " + String(i+1) + ": " + String(new_entryValues[i]));
+  }
+  
+  File htmlFile = SD.open("/html/save.html", FILE_READ);
+  if (!htmlFile) {
+    server.send(500, "text/plain", "Error: Could not open save.html");
+    return;
+  }
+  String htmlContent = htmlFile.readString();
+  htmlFile.close();
+  server.send(200, "text/html", htmlContent);
+}
+
+void handleWebRestart() {
+  Serial.println("Web restart requested");
+  server.send(200, "text/plain", "Restarting device...");
+  
+  // Properly close and cleanup resources
+  Serial.println("Closing web server...");
+  server.close();
+  
+  Serial.println("Disconnecting WiFi...");
+  WiFi.disconnect(true);
+  
+  Serial.println("Closing SD card...");
+  SD.end();
+  
+  Serial.println("Cleanup complete, restarting in 2 seconds...");
+  delay(2000);
+  
+  // Use hardware reset instead of ESP.restart()
+  esp_restart();
+}
+
+// API request function with proper error handling
+bool sendAPIRequest(int buttonIndex) {
+  WiFiClientSecure *client = new WiFiClientSecure;
+  client->setInsecure();
+  client->setTimeout(5000); // 5 second timeout
+  
+  HTTPClient https;
+  if (!https.begin(*client, apiUrl)) {
+    Serial.println("Failed to begin HTTPS connection");
+    delete client;
+    return false;
+  }
+  
+  https.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  https.setTimeout(5000);
+  
+  String httpRequestData = "entryId=" + String(entryValues[buttonIndex]);
+  int httpResponseCode = https.POST(httpRequestData);
+  
+  bool success = (httpResponseCode > 0);
+  if (success) {
+    Serial.printf("Button %d API call successful: %d\n", buttonIndex + 1, httpResponseCode);
+  } else {
+    Serial.printf("Button %d API call failed: %s\n", buttonIndex + 1, https.errorToString(httpResponseCode).c_str());
+  }
+  
+  https.end();
+  delete client;
+  return success;
+}
+
+// WiFi connection monitoring and reconnection
+void checkWiFiConnection() {
+  // Only check WiFi if system has been running for at least 10 seconds
+  // This prevents TCP stack issues during boot
+  static bool systemReady = false;
+  if (millis() < 10000) {
+    return;
+  }
+  systemReady = true;
+  
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi disconnected, attempting reconnect...");
+    
+    // Disconnect cleanly first
+    WiFi.disconnect();
+    delay(1000);
+    
+    // Reconnect with fresh connection
+    WiFi.begin(ssid.c_str(), password.c_str());
+    
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+      delay(500);
+      attempts++;
+      Serial.print(".");
+    }
+    Serial.println();
+    
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("WiFi reconnected");
+      Serial.printf("WiFi IP: %s\n", WiFi.localIP().toString().c_str());
+    } else {
+      Serial.println("WiFi reconnection failed");
+    }
+  }
 }
 
 void setup() {
   Serial.begin(115200);
+  delay(1000); // Give serial time to initialize
+  Serial.println("AltaNode32 starting up...");
+  
   EEPROM.begin(KEY_SIZE);
 
   for (int pin : buttonPins) {
@@ -439,48 +542,116 @@ void setup() {
   }
 
   if (!SD.begin(chipSelect)) {
-    Serial.println("SD card initialization failed");
-    return;
+    Serial.println("SD card initialization failed - system cannot continue");
+    Serial.println("Please check SD card connection and contents");
+    while(true) {
+      delay(5000); // Halt execution but keep serial active
+      Serial.println("SD card required for operation");
+    }
   }
   Serial.println("SD card initialized.");
 
   loadWifi();
 
+  // Add WiFi connection timeout to prevent infinite loops
+  Serial.println("Attempting WiFi connection...");
   WiFi.begin(ssid.c_str(), password.c_str());
 
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Connecting to WiFi...");
+  int wifiAttempts = 0;
+  const int maxWifiAttempts = 30; // 30 seconds maximum
+  
+  while (WiFi.status() != WL_CONNECTED && wifiAttempts < maxWifiAttempts) {
+    Serial.printf("Connecting to WiFi... (attempt %d/%d)\n", wifiAttempts + 1, maxWifiAttempts);
     delay(1000);
+    wifiAttempts++;
+    
+    // Feed the watchdog to prevent reset
+    yield();
   }
-  Serial.println("WiFi Connected");
-  Serial.printf("WiFi IP: %s\n", WiFi.localIP().toString().c_str());
-  Serial.printf("WiFi MAC: %s\n", WiFi.macAddress().c_str());
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("WiFi Connected");
+    Serial.printf("WiFi IP: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("WiFi MAC: %s\n", WiFi.macAddress().c_str());
+  } else {
+    Serial.println("WiFi connection failed - continuing in offline mode");
+    Serial.println("Device will still function for local configuration");
+  }
 
   loadSetup();
 
+  // Start web server
+  Serial.println("Starting web server...");
   setupWebServer();
+  
+  Serial.println("System initialization complete");
+  Serial.println("Ready for operation");
 }
 
 void loop() {
-  WiFiClientSecure *client = new WiFiClientSecure;
-  client->setInsecure();
-
-  HTTPClient https;
-  https.begin(*client, apiUrl);
-  https.addHeader("Content-Type", "application/x-www-form-urlencoded");
-
-  for (int i = 0; i < 4; i++) {
-    if (digitalRead(buttonPins[i]) == LOW) {
-      Serial.printf("Button %d pressed!\n", i + 1);
-      String httpRequestData = "entryId=" + String(entryValues[i]);
-      
-      https.sendRequest("POST", httpRequestData);
-      
-      // No need to wait for or process the response
-      delay(500); // Debounce delay
+  static unsigned long lastButtonPress[4] = {0};
+  static unsigned long lastWiFiCheck = 0;
+  static unsigned long lastMemoryCheck = 0;
+  static bool firstLoop = true;
+  const unsigned long debounceDelay = 200;
+  const unsigned long wifiCheckInterval = 30000; // Check WiFi every 30 seconds
+  const unsigned long memoryCheckInterval = 60000; // Check memory every 60 seconds
+  
+  unsigned long currentTime = millis();
+  
+  // Print a message on first loop to confirm we made it this far
+  if (firstLoop) {
+    Serial.println("Main loop started - system is running");
+    firstLoop = false;
+  }
+  
+  // Periodic memory health check
+  if (currentTime - lastMemoryCheck > memoryCheckInterval) {
+    lastMemoryCheck = currentTime;
+    size_t freeHeap = ESP.getFreeHeap();
+    if (freeHeap < 10000) { // Less than 10KB free
+      Serial.printf("Warning: Low memory - %d bytes free\n", freeHeap);
     }
   }
-
-  https.end();
-  delete client;
+  
+  // Handle web server requests with error protection
+  yield(); // Feed watchdog before handling requests
+  server.handleClient();
+  
+  // Only start checking WiFi after system has been running for 15 seconds
+  if (currentTime > 15000) {
+    // Check WiFi connection periodically
+    if (currentTime - lastWiFiCheck > wifiCheckInterval) {
+      lastWiFiCheck = currentTime;
+      checkWiFiConnection();
+    }
+  }
+  
+  // Handle button presses
+  for (int i = 0; i < 4; i++) {
+    if (digitalRead(buttonPins[i]) == LOW) {
+      if (currentTime - lastButtonPress[i] > debounceDelay) {
+        lastButtonPress[i] = currentTime;
+        Serial.printf("Button %d pressed!\n", i + 1);
+        
+        // Only check WiFi immediately if system has been running long enough
+        if (currentTime > 15000 && WiFi.status() != WL_CONNECTED) {
+          Serial.println("WiFi not connected, attempting immediate reconnect...");
+          yield(); // Feed watchdog during reconnect
+          checkWiFiConnection();
+        }
+        
+        if (WiFi.status() == WL_CONNECTED) {
+          yield(); // Feed watchdog before API call
+          sendAPIRequest(i);
+        } else {
+          Serial.printf("Button %d press ignored - no WiFi connection\n", i + 1);
+        }
+      }
+    }
+  }
+  
+  // Feed watchdog and yield to system
+  yield();
+  delay(10); // Small non-blocking delay
 }
